@@ -294,7 +294,6 @@
           const comps = place.addressComponents || [];
           const country = findComp(comps, "country"); // longText, e.g. "Canada"
           selectedIsCanada = (country || "").toLowerCase() === "canada";
-          console.log(comps.map(c => ({ types: c.types, longText: c.longText, shortText: c.shortText })));
           if (!formatted || !comps.length) {
             setStatus("Please select an address from the dropdown.");
             return;
