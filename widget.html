@@ -1,0 +1,172 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Address Autocomplete Widget</title>
+
+  <!-- Jotform Widget Bridge -->
+  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 12px; }
+    label { display: block; margin-bottom: 6px; font-weight: 600; }
+    input { width: 100%; padding: 10px; font-size: 16px; box-sizing: border-box; }
+    .status { margin-top: 8px; font-size: 12px; opacity: 0.75; }
+  </style>
+</head>
+
+<body>
+  <label for="autocomplete">Address</label>
+  <input id="autocomplete" type="text" placeholder="Start typing your address..." autocomplete="off" />
+  <div id="status" class="status"></div>
+
+  <script>
+    // -----------------------
+    // Production-safe helpers
+    // -----------------------
+    let selectedFormattedAddress = "";
+    let googleLoaded = false;
+
+    function setStatus(msg) {
+      const el = document.getElementById("status");
+      if (el) el.textContent = msg;
+    }
+
+    function inIframe() {
+      try { return window.self !== window.top; } catch { return true; }
+    }
+
+    function isLikelyJotformEmbed() {
+      const ref = (document.referrer || "").toLowerCase();
+      return inIframe() && (
+        ref.includes("jotform.com") ||
+        ref.includes("jotform.io") ||
+        ref.includes("jotformz.com")
+      );
+    }
+
+    function getQueryParam(name) {
+      const p = new URLSearchParams(window.location.search);
+      return p.get(name) || "";
+    }
+
+    function loadGooglePlaces({ apiKey, countryCode }) {
+      if (googleLoaded) return;
+      if (!apiKey) {
+        setStatus("Missing API key. Provide MapsApiKey (Jotform) or ?devKey= (local).");
+        return;
+      }
+
+      // Define callback BEFORE loading script
+      window.initAutocomplete = () => {
+        googleLoaded = true;
+
+        const input = document.getElementById("autocomplete");
+        if (!input) {
+          setStatus("Internal error: missing #autocomplete.");
+          return;
+        }
+
+        const ac = new google.maps.places.Autocomplete(input, {
+          types: ["address"],
+          componentRestrictions: countryCode ? { country: countryCode } : undefined
+        });
+
+        // Request only what we need (minimizes data & cost)
+        ac.setFields(["formatted_address"]);
+
+        ac.addListener("place_changed", () => {
+          const place = ac.getPlace();
+          selectedFormattedAddress = (place && place.formatted_address) ? place.formatted_address : "";
+          setStatus(selectedFormattedAddress ? "Address selected ✅" : "Please select an address from the dropdown.");
+        });
+
+        setStatus("Ready ✅");
+      };
+
+      const script = document.createElement("script");
+      script.src =
+        "https://maps.googleapis.com/maps/api/js?key=" +
+        encodeURIComponent(apiKey) +
+        "&libraries=places&callback=initAutocomplete";
+      script.async = true;
+
+      script.onerror = () => setStatus("Failed to load Google Maps script (key/restrictions/APIs/billing).");
+      document.head.appendChild(script);
+
+      setStatus("Loading Google Places…");
+    }
+
+    // -----------------------
+    // Boot modes
+    // -----------------------
+    function bootStandalone() {
+      // Local dev: pass key via URL so it's not in the file
+      // Example: http://localhost:3000/widget.html?devKey=YOUR_KEY
+      const apiKey = getQueryParam("devKey");
+      const countryCode = getQueryParam("country") || ""; // optional
+
+      // Optional: restore from ?value= for quick testing
+      const existing = getQueryParam("value");
+      if (existing) {
+        selectedFormattedAddress = existing;
+        document.getElementById("autocomplete").value = existing;
+      }
+
+      loadGooglePlaces({ apiKey, countryCode });
+    }
+
+    function bootJotform() {
+      // Fail loudly if ready never arrives (helps diagnose embedding issues)
+      let readyFired = false;
+      const timer = setTimeout(() => {
+        if (!readyFired) setStatus("Waiting for Jotform… (Are you previewing inside Jotform?)");
+      }, 1200);
+
+      JFCustomWidget.subscribe("ready", (data) => {
+        readyFired = true;
+        clearTimeout(timer);
+
+        // Restore existing value (edit submission)
+        if (data && typeof data.value === "string" && data.value.trim()) {
+          selectedFormattedAddress = data.value;
+          document.getElementById("autocomplete").value = data.value;
+        }
+
+        const apiKey = JFCustomWidget.getWidgetSetting("MapsApiKey") || "";
+        const countryCode = JFCustomWidget.getWidgetSetting("CountryCode") || "";
+
+        loadGooglePlaces({ apiKey, countryCode });
+      });
+
+      // Submit: return ONE string (formatted address)
+      JFCustomWidget.subscribe("submit", () => {
+        // Production recommendation: require a dropdown selection.
+        // That means: don't fallback to typed text unless you want to allow manual.
+        const typed = document.getElementById("autocomplete").value.trim();
+
+        // Strict: user must select from dropdown
+        const valueToSend = selectedFormattedAddress;
+
+        // If you want lenient behavior instead, use:
+        // const valueToSend = selectedFormattedAddress || typed;
+
+        const valid = Boolean(valueToSend);
+
+        JFCustomWidget.sendSubmit({
+          valid,
+          value: valueToSend || "" // send empty string if invalid
+        });
+      });
+    }
+
+    // Decide which boot path
+    if (isLikelyJotformEmbed()) {
+      bootJotform();
+    } else {
+      bootStandalone();
+    }
+  </script>
+</body>
+</html>
