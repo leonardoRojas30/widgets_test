@@ -1,32 +1,108 @@
 <!doctype html>
 <html>
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Address Autocomplete Widget</title>
+  <title>Address Autocomplete Widget (New)</title>
 
   <!-- Jotform Widget Bridge -->
   <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
 
   <style>
-    body { font-family: system-ui, sans-serif; margin: 12px; }
-    label { display: block; margin-bottom: 6px; font-weight: 600; }
-    input { width: 100%; padding: 10px; font-size: 16px; box-sizing: border-box; }
-    .status { margin-top: 8px; font-size: 12px; opacity: 0.75; }
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 12px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+
+    input {
+      width: 100%;
+      padding: 10px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+
+    .row {
+      margin-bottom: 10px;
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .status {
+      margin-top: 8px;
+      font-size: 12px;
+      opacity: 0.75;
+    }
+
+    #pacHost {
+      width: 100%;
+    }
+
+    gmp-place-autocomplete {
+      width: 100%;
+      display: block;
+    }
   </style>
 </head>
 
 <body>
-  <label for="autocomplete">Address</label>
-  <input id="autocomplete" type="text" placeholder="Start typing your address..." autocomplete="off" />
+  <div class="row">
+    <label>Address</label>
+    <div id="pacHost"></div>
+  </div>
+
+  <!-- Address details (hidden until selected) -->
+  <div id="details" style="display:none;">
+    <div class="row">
+      <label>Street Address</label>
+      <input id="street1" />
+    </div>
+
+    <div class="row">
+      <label>Street Address 2 (optional)</label>
+      <input id="street2" />
+    </div>
+
+    <div class="row grid2">
+      <div>
+        <label>City</label>
+        <input id="city" />
+      </div>
+      <div>
+        <label>State / Region</label>
+        <input id="state" />
+      </div>
+    </div>
+
+    <div class="row grid2">
+      <div>
+        <label>Postal code</label>
+        <input id="zip" />
+      </div>
+      <div>
+        <label>Country</label>
+        <input id="country" />
+      </div>
+    </div>
+  </div>
+
   <div id="status" class="status"></div>
 
   <script>
-    // -----------------------
-    // Production-safe helpers
-    // -----------------------
-    let selectedFormattedAddress = "";
     let googleLoaded = false;
+    let selectedFormattedAddress = "";
+    let lastTyped = "";
+    let selectedIsCanada = false;
 
     function setStatus(msg) {
       const el = document.getElementById("status");
@@ -37,7 +113,7 @@
       try { return window.self !== window.top; } catch { return true; }
     }
 
-    function isLikelyJotformEmbed() {
+    function isJotformEmbed() {
       const ref = (document.referrer || "").toLowerCase();
       return inIframe() && (
         ref.includes("jotform.com") ||
@@ -51,122 +127,238 @@
       return p.get(name) || "";
     }
 
-    function loadGooglePlaces({ apiKey, countryCode }) {
+    // New Address Components shape uses longText/shortText
+    function findComp(comps, type) {
+      const c = comps.find(x => x.types && x.types.includes(type));
+      return c ? (c.longText || "") : "";
+    }
+    function findCompShort(comps, type) {
+      const c = comps.find(x => x.types && x.types.includes(type));
+      return c ? (c.shortText || c.longText || "") : "";
+    }
+
+    function setDetailsVisible(on) {
+      document.getElementById("details").style.display = on ? "block" : "none";
+    }
+
+    function clearDetails(exceptStreet2 = true) {
+      document.getElementById("street1").value = "";
+      if (!exceptStreet2) document.getElementById("street2").value = "";
+      document.getElementById("city").value = "";
+      document.getElementById("state").value = "";
+      document.getElementById("zip").value = "";
+      document.getElementById("country").value = "";
+    }
+
+    function fillDetailsFromAddressComponents(comps) {
+      let streetNumber = "";
+      let route = "";
+      let postalCode = "";
+      let postalSuffix = "";
+
+      let city = "";
+      let state = "";
+      let country = "";
+
+      // Track best city candidate in priority order
+      let cityFallback2 = "";
+      let cityFallback3 = "";
+
+      for (const component of comps) {
+        const types = component.types || [];
+        const long = component.longText || "";
+        const short = component.shortText || long;
+
+        // Street parts
+        if (types.includes("street_number")) streetNumber = long;
+        if (types.includes("route")) route = short;
+
+        // Postal
+        if (types.includes("postal_code")) postalCode = long;
+        if (types.includes("postal_code_suffix")) postalSuffix = long;
+
+        // City candidates (priority order)
+        if (types.includes("locality")) city = long;
+        if (types.includes("postal_town") && !city) city = long;
+
+        // Common non-US cases: city may be admin level 2 or sublocality
+        if (types.includes("administrative_area_level_2")) cityFallback2 = long;
+        if (types.includes("sublocality_level_1")) cityFallback3 = long;
+        if (types.includes("neighborhood") && !cityFallback3) cityFallback3 = long;
+
+        // State/Region
+        if (types.includes("administrative_area_level_1")) state = short;
+
+        // Country
+        if (types.includes("country")) country = long;
+      }
+
+      // Assemble street line
+      const street1 = [streetNumber, route].filter(Boolean).join(" ").trim();
+
+      // Assemble postal (include suffix if present)
+      const zip = postalCode ? (postalSuffix ? `${postalCode}-${postalSuffix}` : postalCode) : "";
+
+      // Finalize city using fallbacks if needed
+      if (!city) city = cityFallback2 || cityFallback3 || "";
+
+      // Apply
+      setDetailsVisible(true);
+      document.getElementById("street1").value = street1;
+      document.getElementById("city").value = city;
+      document.getElementById("state").value = state;
+      document.getElementById("zip").value = zip;
+      document.getElementById("country").value = country;
+
+    }
+
+    function readPACValue(pacEl) {
+      // Best-effort typed value getter (web component may use shadow DOM)
+      let v = "";
+      try { v = (pacEl.value || ""); } catch { }
+      if (!v) v = pacEl.getAttribute("value") || "";
+      if (!v) {
+        const maybeInput = pacEl.querySelector("input");
+        v = maybeInput ? maybeInput.value : "";
+      }
+      return (v || "").toString();
+    }
+
+    async function initNewAutocomplete({ apiKey, countryCode, existingValue }) {
       if (googleLoaded) return;
       if (!apiKey) {
         setStatus("Missing API key. Provide MapsApiKey (Jotform) or ?devKey= (local).");
         return;
       }
 
-      // Define callback BEFORE loading script
-      window.initAutocomplete = () => {
-        googleLoaded = true;
-
-        const input = document.getElementById("autocomplete");
-        if (!input) {
-          setStatus("Internal error: missing #autocomplete.");
-          return;
-        }
-
-        const ac = new google.maps.places.Autocomplete(input, {
-          types: ["address"],
-          componentRestrictions: countryCode ? { country: countryCode } : undefined
-        });
-
-        // Request only what we need (minimizes data & cost)
-        ac.setFields(["formatted_address"]);
-
-        ac.addListener("place_changed", () => {
-          const place = ac.getPlace();
-          selectedFormattedAddress = (place && place.formatted_address) ? place.formatted_address : "";
-          setStatus(selectedFormattedAddress ? "Address selected ✅" : "Please select an address from the dropdown.");
-        });
-
-        setStatus("Ready ✅");
-      };
-
-      const script = document.createElement("script");
-      script.src =
-        "https://maps.googleapis.com/maps/api/js?key=" +
-        encodeURIComponent(apiKey) +
-        "&libraries=places&callback=initAutocomplete";
-      script.async = true;
-
-      script.onerror = () => setStatus("Failed to load Google Maps script (key/restrictions/APIs/billing).");
-      document.head.appendChild(script);
-
       setStatus("Loading Google Places…");
-    }
 
-    // -----------------------
-    // Boot modes
-    // -----------------------
-    function bootStandalone() {
-      // Local dev: pass key via URL so it's not in the file
-      // Example: http://localhost:3000/widget.html?devKey=YOUR_KEY
-      const apiKey = getQueryParam("devKey");
-      const countryCode = getQueryParam("country") || ""; // optional
+      // Load Maps JS, then import Places library
+      await new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = "https://maps.googleapis.com/maps/api/js?key=" + encodeURIComponent(apiKey) + "&v=weekly";
+        s.async = true;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      }).catch(() => {
+        setStatus("Failed to load Google Maps script (key/restrictions/APIs/billing).");
+        throw new Error("Maps load failed");
+      });
 
-      // Optional: restore from ?value= for quick testing
-      const existing = getQueryParam("value");
-      if (existing) {
-        selectedFormattedAddress = existing;
-        document.getElementById("autocomplete").value = existing;
+      await google.maps.importLibrary("places");
+
+      // Mount the new Place Autocomplete element
+      const host = document.getElementById("pacHost");
+      host.innerHTML = "";
+
+      const pac = new google.maps.places.PlaceAutocompleteElement({});
+      pac.placeholder = "Start typing your address…";
+
+      if (countryCode) {
+        // New widget expects lowercase region codes
+        pac.includedRegionCodes = ["ca"];
       }
 
-      loadGooglePlaces({ apiKey, countryCode });
+      host.appendChild(pac);
+
+      // Restore typed/previous value (best-effort)
+      if (existingValue) {
+        try { pac.value = existingValue; } catch { }
+        pac.setAttribute("value", existingValue);
+        lastTyped = existingValue;
+      }
+
+      // Track typed text for "allow typed" fallback
+      pac.addEventListener("input", () => {
+        lastTyped = readPACValue(pac);
+        // If they start typing again, consider the old selection stale
+        // (keeps you from submitting a previous selection accidentally)
+        if (selectedFormattedAddress && lastTyped && lastTyped !== selectedFormattedAddress) {
+          selectedFormattedAddress = "";
+          // Keep details visible; user may be adjusting manually. Up to you:
+          // setDetailsVisible(false); clearDetails(true);
+        }
+      });
+
+      // On selection, fetch fields and fill details correctly
+      pac.addEventListener("gmp-select", async ({ placePrediction }) => {
+        try {
+          const place = placePrediction.toPlace();
+          await place.fetchFields({ fields: ["formattedAddress", "addressComponents"] });
+
+          const formatted = place.formattedAddress || "";
+          selectedFormattedAddress = formatted;
+          lastTyped = formatted || lastTyped;
+
+          const comps = place.addressComponents || [];
+          const country = findComp(comps, "country"); // longText, e.g. "Canada"
+          selectedIsCanada = (country || "").toLowerCase() === "canada";
+          console.log(comps.map(c => ({ types: c.types, longText: c.longText, shortText: c.shortText })));
+          if (!formatted || !comps.length) {
+            setStatus("Please select an address from the dropdown.");
+            return;
+          }
+
+          // Fill your details panel
+          // Note: addressComponents use longText/shortText, handled above.
+          fillDetailsFromAddressComponents(comps);
+
+          setStatus("Address selected ✅");
+        } catch (e) {
+          setStatus("Could not read selected place details.");
+        }
+      });
+
+      googleLoaded = true;
+      setStatus("Ready ✅");
+      return pac;
+    }
+
+    function bootStandalone() {
+      const apiKey = getQueryParam("devKey");
+      const countryCode = "CA";
+      const existingValue = getQueryParam("value") || "";
+
+      if (existingValue) {
+        selectedFormattedAddress = ""; // treat as typed unless re-selected
+        lastTyped = existingValue;
+      }
+
+      initNewAutocomplete({ apiKey, countryCode, existingValue });
     }
 
     function bootJotform() {
-      // Fail loudly if ready never arrives (helps diagnose embedding issues)
-      let readyFired = false;
-      const timer = setTimeout(() => {
-        if (!readyFired) setStatus("Waiting for Jotform… (Are you previewing inside Jotform?)");
-      }, 1200);
-
       JFCustomWidget.subscribe("ready", (data) => {
-        readyFired = true;
-        clearTimeout(timer);
+        const existingValue = (data && typeof data.value === "string") ? data.value : "";
 
-        // Restore existing value (edit submission)
-        if (data && typeof data.value === "string" && data.value.trim()) {
-          selectedFormattedAddress = data.value;
-          document.getElementById("autocomplete").value = data.value;
+        if (existingValue) {
+          selectedFormattedAddress = ""; // treat restored as typed unless re-selected
+          lastTyped = existingValue;
         }
 
         const apiKey = JFCustomWidget.getWidgetSetting("MapsApiKey") || "";
-        const countryCode = JFCustomWidget.getWidgetSetting("CountryCode") || "";
+        const countryCode = "CA";
 
-        loadGooglePlaces({ apiKey, countryCode });
+        initNewAutocomplete({ apiKey, countryCode, existingValue });
       });
 
-      // Submit: return ONE string (formatted address)
       JFCustomWidget.subscribe("submit", () => {
-        // Production recommendation: require a dropdown selection.
-        // That means: don't fallback to typed text unless you want to allow manual.
-        const typed = document.getElementById("autocomplete").value.trim();
+        const valueToSend = (selectedFormattedAddress || lastTyped || "").trim();
 
-        // Strict: user must select from dropdown
-        const valueToSend = selectedFormattedAddress;
+        // If user selected from dropdown, enforce Canada.
+        // If user only typed, you can either reject or accept.
+        const valid = selectedFormattedAddress
+          ? selectedIsCanada && Boolean(valueToSend)
+          : Boolean(valueToSend); // keeps typed allowed (but can't verify)
 
-        // If you want lenient behavior instead, use:
-        // const valueToSend = selectedFormattedAddress || typed;
-
-        const valid = Boolean(valueToSend);
-
-        JFCustomWidget.sendSubmit({
-          valid,
-          value: valueToSend || "" // send empty string if invalid
-        });
+        JFCustomWidget.sendSubmit({ valid, value: valueToSend });
       });
     }
 
-    // Decide which boot path
-    if (isLikelyJotformEmbed()) {
-      bootJotform();
-    } else {
-      bootStandalone();
-    }
+    if (isJotformEmbed()) bootJotform();
+    else bootStandalone();
   </script>
 </body>
+
 </html>
