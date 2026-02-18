@@ -100,6 +100,7 @@
 
   <script>
     let googleLoaded = false;
+    let hasSelected = false;
     let selectedFormattedAddress = "";
     let lastTyped = "";
     let selectedIsCanada = false;
@@ -269,16 +270,10 @@
         lastTyped = existingValue;
       }
 
-      // Track typed text for "allow typed" fallback
       pac.addEventListener("input", () => {
-        lastTyped = readPACValue(pac);
-        // If they start typing again, consider the old selection stale
-        // (keeps you from submitting a previous selection accidentally)
-        if (selectedFormattedAddress && lastTyped && lastTyped !== selectedFormattedAddress) {
-          selectedFormattedAddress = "";
-          // Keep details visible; user may be adjusting manually. Up to you:
-          // setDetailsVisible(false); clearDetails(true);
-        }
+        hasSelected = false;
+        selectedFormattedAddress = "";
+        setStatus("Please select an address from the dropdown.");
       });
 
       // On selection, fetch fields and fill details correctly
@@ -289,6 +284,7 @@
 
           const formatted = place.formattedAddress || "";
           selectedFormattedAddress = formatted;
+          hasSelected = Boolean(formatted);
           lastTyped = formatted || lastTyped;
 
           const comps = place.addressComponents || [];
@@ -343,16 +339,15 @@
       });
 
       JFCustomWidget.subscribe("submit", () => {
-        const valueToSend = (selectedFormattedAddress || lastTyped || "").trim();
+        const valueToSend = (selectedFormattedAddress || "").trim();
+        const valid = hasSelected && Boolean(valueToSend);
 
-        // If user selected from dropdown, enforce Canada.
-        // If user only typed, you can either reject or accept.
-        const valid = selectedFormattedAddress
-          ? selectedIsCanada && Boolean(valueToSend)
-          : Boolean(valueToSend); // keeps typed allowed (but can't verify)
-
-        JFCustomWidget.sendSubmit({ valid, value: valueToSend });
+        JFCustomWidget.sendSubmit({
+          valid,
+          value: valueToSend
+        });
       });
+
     }
 
     if (isJotformEmbed()) bootJotform();
